@@ -1,7 +1,7 @@
 #ifdef _WIN32
 #include <winsock2.h>
-#include <ws2tcpip.h> // For inet_addr and other functions
-#include <windows.h>  // For SSIZE_T
+#include <ws2tcpip.h>
+#include <windows.h>
 typedef SSIZE_T ssize_t;
 #define close closesocket
 #else
@@ -98,7 +98,6 @@ void writeSocket(int socket, const void *data, NnSize size) {
 }
 
 static inline bool tryReadSocket(int socket, void *data, NnSize size, unsigned long maxAttempts) {
-    // maxAttempts = 0 means infinite attempts
     NnSize s = size;
     while (s > 0) {
         ssize_t r = recv(socket, (char*)data, s, 0);
@@ -260,7 +259,7 @@ std::unique_ptr<NnNetwork> NnNetwork::serve(int port) {
     printf("⭕ The root node has connected\n");
 
     readSocket(rootSocket, &nSockets, sizeof(nSockets));
-    NnUint nNodes = nSockets - 1; // nSockets - 1 root node
+    NnUint nNodes = nSockets - 1;
     printf("⭕ nNodes: %d\n", nNodes);
     readSocket(rootSocket, &nodeIndex, sizeof(nodeIndex));
     printf("⭕ NodeIndex: %d\n", nodeIndex);
@@ -281,7 +280,6 @@ std::unique_ptr<NnNetwork> NnNetwork::serve(int port) {
 
     writeAckPacket(rootSocket);
 
-    // We need to wait here until the root node will send a "root is ready" packet
     readAckPacket(rootSocket);
 
     for (NnUint i = 0; i < nNodes; i++) {
@@ -318,7 +316,7 @@ std::unique_ptr<NnNetwork> NnNetwork::connect(NnUint nSockets, char **hosts, NnU
         int socket = connectSocket(hosts[i], ports[i]);
         sockets[i] = socket;
         writeSocket(socket, &nSockets, sizeof(nSockets));
-        writeSocket(socket, &i, sizeof(i)); // send node index
+        writeSocket(socket, &i, sizeof(i));
         for (NnUint j = 0; j < nSockets; j++) {
             if (j == i)
                 continue;
@@ -499,8 +497,6 @@ void NnNetwork::resetStats() {
 
 static void syncWithRoot(NnNetwork *network, NnByte nodeIndex, NnByte *buffer, NnSize nBytes, NnUint nThreads, NnUint threadIndex) {
     if (nodeIndex == 0) {
-        // root
-
         NnUint nSocketsPerThread = network->nSockets / nThreads + (network->nSockets % nThreads > threadIndex ? 1 : 0);
         if (nSocketsPerThread == 0) return;
 
@@ -512,14 +508,12 @@ static void syncWithRoot(NnNetwork *network, NnByte nodeIndex, NnByte *buffer, N
         }
         network->writeMany(nSocketsPerThread, &ios[0]);
     } else {
-        // worker
-
         if (threadIndex != 0) return;
 
         NnSocketIo ios;
         ios.data = buffer;
         ios.size = nBytes;
-        ios.socketIndex = 0; // root
+        ios.socketIndex = 0;
         network->readMany(1, &ios);
     }
 }
@@ -715,8 +709,8 @@ NnNodeConfig NnWorkerConfigReader::readNode() {
         bufferConfig->name = readString(network, ROOT_SOCKET_INDEX);
     }
 
-    for (NnUint segmentIndex = 0; segmentIndex < config.nSegments; segmentIndex++) {
-        NnSegmentConfig *segmentConfig = &config.segments[segmentIndex];
+    for (NnUint segmentIndex = 0; segmentIndex < config->nSegments; segmentIndex++) {
+        NnSegmentConfig *segmentConfig = &config->segments[segmentIndex];
         network->read(ROOT_SOCKET_INDEX, &segmentConfig->nSyncs, sizeof(segmentConfig->nSyncs));
         network->read(ROOT_SOCKET_INDEX, &segmentConfig->nOps, sizeof(segmentConfig->nOps));
 
@@ -766,11 +760,7 @@ NnRootWeightLoader::~NnRootWeightLoader() {
 }
 
 void NnRootWeightLoader::finish() {
-    NnUint zeroSize = 0;
-    for (NnUint socketIndex = 0; socketIndex < nNodes - 1; socketIndex++) {
-        network->write(socketIndex, &zeroSize, sizeof(zeroSize));
-        network->readAck(socketIndex);
-    }
+    // No network communication needed for local loading
     if (tempSize > 0) {
         delete[] temp;
         tempSize = 0;
@@ -787,13 +777,7 @@ void NnRootWeightLoader::allocate(NnSize size) {
 }
 
 void NnRootWeightLoader::writeWeight(NnUint nodeIndex, const char *opName, NnUint opIndex, NnSize nBytes, NnByte *weight) {
-    NnUint nameSize = std::strlen(opName) + 1;
-    NnUint socketIndex = nodeIndex - 1;
-    network->write(socketIndex, &nameSize, sizeof(nameSize));
-    network->write(socketIndex, opName, nameSize);
-    network->write(socketIndex, &opIndex, sizeof(opIndex));
-    network->write(socketIndex, &nBytes, sizeof(nBytes));
-    network->write(socketIndex, weight, nBytes);
+    // Deprecated: Weights are loaded locally
 }
 
 NnSize NnRootWeightLoader::loadRoot(const char *opName, NnUint opIndex, NnSize nBytes, NnByte *weight) {
@@ -803,11 +787,6 @@ NnSize NnRootWeightLoader::loadRoot(const char *opName, NnUint opIndex, NnSize n
 
 NnSize NnRootWeightLoader::loadAll(const char *opName, NnUint opIndex, NnSize nBytes, NnByte *weight) {
     executor->loadWeight(opName, opIndex, nBytes, weight);
-
-    if (nNodes > 1) {
-        for (NnUint nodeIndex = 1; nodeIndex < nNodes; nodeIndex++)
-            writeWeight(nodeIndex, opName, opIndex, nBytes, weight);
-    }
     return nBytes;
 }
 
@@ -816,13 +795,8 @@ NnSize NnRootWeightLoader::loadRowMatmulSlices(const char *opName, NnUint opInde
         executor->loadWeight(opName, opIndex, slice->sliceSize.nBytes, weight);
     } else {
         allocate(slice->sliceSize.nBytes);
-        for (NnUint nodeIndex = 0; nodeIndex < nNodes; nodeIndex++) {
-            splitRowMatmulWeight(slice, nodeIndex, weight, temp);
-            if (nodeIndex == 0)
-                executor->loadWeight(opName, opIndex, slice->sliceSize.nBytes, temp);
-            else
-                writeWeight(nodeIndex, opName, opIndex, slice->sliceSize.nBytes, temp);
-        }
+        splitRowMatmulWeight(slice, 0, weight, temp);
+        executor->loadWeight(opName, opIndex, slice->sliceSize.nBytes, temp);
     }
     return slice->size.nBytes;
 }
@@ -832,13 +806,8 @@ NnSize NnRootWeightLoader::loadColMatmulSlices(const char *opName, NnUint opInde
         executor->loadWeight(opName, opIndex, slice->sliceSize.nBytes, weight);
     } else {
         allocate(slice->sliceSize.nBytes);
-        for (NnUint nodeIndex = 0; nodeIndex < nNodes; nodeIndex++) {
-            splitColMatmulWeight(slice, nodeIndex, weight, temp);
-            if (nodeIndex == 0)
-                executor->loadWeight(opName, opIndex, slice->sliceSize.nBytes, temp);
-            else
-                writeWeight(nodeIndex, opName, opIndex, slice->sliceSize.nBytes, temp);
-        }
+        splitColMatmulWeight(slice, 0, weight, temp);
+        executor->loadWeight(opName, opIndex, slice->sliceSize.nBytes, temp);
     }
     return slice->size.nBytes;
 }
@@ -864,28 +833,6 @@ void NnWorkerWeightReader::allocate(NnUint size) {
 }
 
 void NnWorkerWeightReader::read() {
-    NnUint nameSize;
-    NnUint opIndex;
-    NnSize nBytes;
-    while (true) {
-        network->read(0, &nameSize, sizeof(nameSize));
-        if (nameSize == 0) {
-            network->writeAck(ROOT_SOCKET_INDEX);
-            if (tempSize > 0) {
-                delete temp;
-                tempSize = 0;
-            }
-            break;
-        }
-        std::unique_ptr<char[]> opNamePtr(new char[nameSize]);
-        char *opName = opNamePtr.get();
-        network->read(ROOT_SOCKET_INDEX, opName, nameSize);
-        network->read(ROOT_SOCKET_INDEX, &opIndex, sizeof(opIndex));
-        network->read(ROOT_SOCKET_INDEX, &nBytes, sizeof(nBytes));
-        allocate(nBytes);
-        network->read(0, temp, nBytes);
-        executor->loadWeight(opName, opIndex, nBytes, temp);
-        printf("💿 Loaded %22s %3d, %12zu kB\n", opName, opIndex, nBytes / 1024);
-    }
-    printf("💿 Weights loaded\n");
+    // Deprecated: Weights are loaded locally
+    printf("💿 Weights loaded locally\n");
 }

@@ -2,6 +2,9 @@
 #include <cassert>
 #include <cstring>
 #include <stdexcept>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
 #if defined(DLLAMA_VULKAN)
     #include "nn/nn-vulkan.hpp"
 #endif
@@ -48,7 +51,6 @@ AppCliArgs AppCliArgs::parse(int argc, char* *argv, bool requireMode) {
         args.mode = argv[1];
         i++;
     }
-    // First see if any of the args are asking for help/usage and fail fast
     for (int x = 0; x < argc; x++) {
         if ((std::strcmp(argv[x], "--usage") == 0) ||
             (std::strcmp(argv[x], "--help") == 0) ||
@@ -207,14 +209,27 @@ bool WorkerLlmInference::tryReadControlPacket() {
 void runInferenceApp(AppCliArgs *args, void (*handler)(AppInferenceContext *context)) {
     NnUint nNodes = args->nWorkers + 1;
 
-    LlmHeader header = loadLlmHeader(args->modelPath, args->maxSeqLen, args->syncType);
+    // Load model header using mmap
+    int model_fd = open(args->modelPath, O_RDONLY);
+    if (model_fd == -1) throw std::runtime_error("Failed to open model file: " + std::string(args->modelPath));
+    off_t model_size = lseek(model_fd, 0, SEEK_END);
+    void *model_data = mmap(NULL, model_size, PROT_READ, MAP_PRIVATE, model_fd, 0);
+    if (model_data == MAP_FAILED) throw std::runtime_error("Failed to mmap model file");
+    LlmHeader header = loadLlmHeaderFromMemory(model_data, args->maxSeqLen, args->syncType);
+    close(model_fd);
     if (nNodes > header.nKvHeads)
-        // TODO: https://github.com/b4rtaz/distributed-llama/issues/70
         throw std::runtime_error("This version does not support more nodes than the number of KV heads in the model");
     if (header.weightType == F_Q40 && header.syncType != F_Q80)
         throw std::runtime_error("This version supports only Q40 weights with Q80 sync type");
 
-    Tokenizer tokenizer(args->tokenizerPath);
+    // Load tokenizer using mmap
+    int tokenizer_fd = open(args->tokenizerPath, O_RDONLY);
+    if (tokenizer_fd == -1) throw std::runtime_error("Failed to open tokenizer file: " + std::string(args->tokenizerPath));
+    off_t tokenizer_size = lseek(tokenizer_fd, 0, SEEK_END);
+    void *tokenizer_data = mmap(NULL, tokenizer_size, PROT_READ, MAP_PRIVATE, tokenizer_fd, 0);
+    if (tokenizer_data == MAP_FAILED) throw std::runtime_error("Failed to mmap tokenizer file");
+    Tokenizer tokenizer(tokenizer_data);
+    close(tokenizer_fd);
     if (tokenizer.vocabSize != header.vocabSize)
         throw std::runtime_error("Tokenizer vocab size does not match the model vocab size");
 
@@ -248,8 +263,10 @@ void runInferenceApp(AppCliArgs *args, void (*handler)(AppInferenceContext *cont
     std::unique_ptr<NnDevice> device(createDevice(args, &net.netConfig, rootNodeConfig, &execution));
     NnExecutor executor(&net.netConfig, rootNodeConfig, device.get(), &execution, synchronizer.get(), args->benchmark);
 
+    // Load weights locally
     NnRootWeightLoader weightLoader(&executor, network, nNodes);
-    loadLlmNetWeight(args->modelPath, &net, &weightLoader);
+    loadLlmNetWeightFromMemory(model_data, &net, &weightLoader);
+    munmap(model_data, model_size); // Unmap after loading
 
     RootLlmInference inference(&net, device.get(), &execution, &executor, network);
 
@@ -288,6 +305,15 @@ void runWorkerApp(AppCliArgs *args) {
 
         printNodeRequiredMemory(&netConfig, &nodeConfig);
 
+        // Load model header using mmap
+        int model_fd = open(args->modelPath, O_RDONLY);
+        if (model_fd == -1) throw std::runtime_error("Failed to open model file: " + std::string(args->modelPath));
+        off_t model_size = lseek(model_fd, 0, SEEK_END);
+        void *model_data = mmap(NULL, model_size, PROT_READ, MAP_PRIVATE, model_fd, 0);
+        if (model_data == MAP_FAILED) throw std::runtime_error("Failed to mmap model file");
+        LlmHeader header = loadLlmHeaderFromMemory(model_data, args->maxSeqLen, args->syncType);
+        close(model_fd);
+
         NnNetExecution execution(args->nThreads, &netConfig);
 
         std::unique_ptr<NnDevice> device(createDevice(args, &netConfig, &nodeConfig, &execution));
@@ -295,8 +321,10 @@ void runWorkerApp(AppCliArgs *args) {
         NnNetworkNodeSynchronizer synchronizer(network, &execution, &netConfig, &nodeConfig);
         NnExecutor executor(&netConfig, &nodeConfig, device.get(), &execution, &synchronizer, false);
 
+        // Load weights locally
         NnWorkerWeightReader weightReader(&executor, network);
-        weightReader.read();
+        loadLlmNetWeightFromMemory(model_data, &header, &nodeConfig, &weightReader);
+        munmap(model_data, model_size);
 
         WorkerLlmInference inference(&execution, network);
         bool isFirstAttempt = true;

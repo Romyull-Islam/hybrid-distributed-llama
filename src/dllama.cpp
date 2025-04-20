@@ -1,239 +1,108 @@
-#include "nn/nn-core.hpp"
-#include "nn/nn-config-builder.hpp"
-#include "nn/nn-cpu.hpp"
-#include "nn/nn-network.hpp"
-#include "nn/nn-executor.hpp"
-#include "llm.hpp"
-#include "tokenizer.hpp"
-#include "app.hpp"
-#include <stdexcept>
+#include "nn/nn-core.hpp" #include "nn/nn-config-builder.hpp" #include "nn/nn-cpu.hpp" #include "nn/nn-network.hpp" #include "nn/nn-executor.hpp" #include "llm.hpp" #include "tokenizer.hpp" #include "app.hpp" #include
 
-static void inference(AppInferenceContext *context) {
-    if (context->args->prompt == nullptr)
-        throw std::runtime_error("Prompt is required");
-    if (context->args->steps == 0)
-        throw std::runtime_error("Number of steps is required");
+static void inference(AppInferenceContext \*context) { if (context-&gt;args-&gt;prompt == nullptr) throw std::runtime_error("Prompt is required"); if (context-&gt;args-&gt;steps == 0) throw std::runtime_error("Number of steps is required");
 
-    std::vector<int> inputTokensVec(std::strlen(context->args->prompt) + 3);
-    int *inputTokens = inputTokensVec.data();
+```
+std::vector<int> inputTokensVec(std::strlen(context->args->prompt));
+NnUint inputTokens = context->tokenizer->encode(context->args->prompt, &inputTokensVec[0]);
+inputTokensVec.resize(inputTokens);
 
-    NnUint pos = 0;
-    int token;
-    int nInputTokens;
-    context->tokenizer->encode(context->args->prompt, inputTokens, &nInputTokens, true, false);
+context->inference->setBatchSize(1);
+for (NnUint i = 0; i < inputTokens; i++) {
+    context->inference->setPosition(i);
+    context->inference->setToken(0, inputTokensVec[i]);
+    context->inference->forward();
+}
 
-    if (nInputTokens > context->header->seqLen)
-        throw std::runtime_error("The number of prompt tokens is greater than the sequence length");
-    if (nInputTokens > context->args->steps)
-        throw std::runtime_error("The number of prompt tokens is greater than the number of steps");
+printf("🟩 Input processed\n");
 
-    NnSize sentBytes = 0;
-    NnSize recvBytes = 0;
-    NnUint evalTotalTime = 0;
-    NnUint predTotalTime = 0;
+for (NnUint i = 0; i < context->args->steps; i++) {
+    context->inference->setPosition(inputTokens + i);
+    context->inference->setToken(0, context->sampler->sample(context->inference->logitsPipe));
+    context->inference->forward();
 
-    printf("%s\n", context->args->prompt);
-    for (;;) {
-        long remainingTokens = nInputTokens - 1 - (long)pos;
-        if (remainingTokens <= 0)
-            break;
-        NnUint batchSize = remainingTokens < context->args->nBatches
-            ? remainingTokens
-            : context->args->nBatches;
-
-        context->inference->setBatchSize(batchSize);
-        context->inference->setPosition(pos);
-        for (NnUint i = 0; i < batchSize; i++)
-            context->inference->setToken(i, inputTokens[pos + i]);
-
-        context->inference->forward();
-
-        pos += batchSize;
-        token = inputTokens[pos + 1];
-
-        if (context->network != nullptr)
-            context->network->getStats(&sentBytes, &recvBytes);
-
-        NnUint evalTime = context->executor->getTotalTime(STEP_EXECUTE_OP);
-        NnUint syncTime = context->executor->getTotalTime(STEP_SYNC_NODES);
-        printf("🔷️ Eval%5u ms Sync%5u ms | Sent%6zu kB Recv%6zu kB | (%d tokens)\n",
-            evalTime / 1000,
-            syncTime / 1000,
-            sentBytes / 1024,
-            recvBytes / 1024,
-            batchSize);
-        evalTotalTime += evalTime + syncTime;
-    }
-
+    int token = (int)context->inference->tokenPipe[0];
+    char *text = context->tokenizer->decode(token);
+    printf("%s", text);
     fflush(stdout);
+}
+printf("\n");
 
-    context->inference->setBatchSize(1);
-    context->tokenizer->resetDecoder();
+if (context->network != NULL) {
+    NnSize sentBytes, recvBytes;
+    context->network->getStats(&sentBytes, &recvBytes);
+    printf("📈 Network: sent %.2f MB, received %.2f MB\n", sentBytes / (1024.0 * 1024.0), recvBytes / (1024.0 * 1024.0));
+}
+```
 
-    const NnUint maxPos = std::min(context->header->seqLen, context->args->steps);
-    for (; pos < maxPos; pos++) {
-        context->inference->setPosition(pos);
-        context->inference->setToken(0, token);
+}
+
+static void chatInference(AppInferenceContext \*context) { ChatTemplate \*chatTemplate = nullptr; if (context-&gt;args-&gt;chatTemplateType == TEMPLATE_LLAMA2) chatTemplate = new Llama2ChatTemplate(); else if (context-&gt;args-&gt;chatTemplateType == TEMPLATE_LLAMA3) chatTemplate = new Llama3ChatTemplate(); else if (context-&gt;args-&gt;chatTemplateType == TEMPLATE_DEEP_SEEK3) chatTemplate = new DeepSeek3ChatTemplate(); else throw std::runtime_error("Unknown chat template");
+
+```
+std::string systemPrompt;
+std::vector<std::string> userPrompts;
+std::vector<std::string> assistantReplies;
+
+if (context->args->prompt != nullptr) {
+    userPrompts.push_back(context->args->prompt);
+}
+
+printf("🟩 Welcome to Distributed Llama Chat\n");
+printf("Type '/exit' to quit or '/clear' to clear the conversation\n\n");
+
+context->inference->setBatchSize(1);
+while (true) {
+    printf("👨‍💻 You: ");
+    std::string input;
+    std::getline(std::cin, input);
+    if (input == "/exit") {
+        break;
+    } else if (input == "/clear") {
+        userPrompts.clear();
+        assistantReplies.clear();
+        printf("🟩 Conversation cleared\n");
+        continue;
+    }
+
+    userPrompts.push_back(input);
+    std::string fullPrompt = chatTemplate->buildPrompt(systemPrompt, userPrompts, assistantReplies);
+    std::vector<int> inputTokensVec(fullPrompt.size());
+    NnUint inputTokens = context->tokenizer->encode(fullPrompt.c_str(), &inputTokensVec[0]);
+    inputTokensVec.resize(inputTokens);
+
+    for (NnUint i = 0; i < inputTokens; i++) {
+        context->inference->setPosition(i);
+        context->inference->setToken(0, inputTokensVec[i]);
+        context->inference->forward();
+    }
+
+    printf("🤖 Assistant: ");
+    std::string reply;
+    for (NnUint i = 0; i < context->args->steps; i++) {
+        context->inference->setPosition(inputTokens + i);
+        context->inference->setToken(0, context->sampler->sample(context->inference->logitsPipe));
         context->inference->forward();
 
-        token = context->sampler->sample(context->inference->logitsPipe);
-
-        char *piece = context->tokenizer->decode(token);
-
-        if (context->network != nullptr)
-            context->network->getStats(&sentBytes, &recvBytes);
-
-        NnUint predTime = context->executor->getTotalTime(STEP_EXECUTE_OP);
-        NnUint syncTime = context->executor->getTotalTime(STEP_SYNC_NODES);
-        printf("🔶 Pred%5u ms Sync%5u ms | Sent%6zu kB Recv%6zu kB | %s\n",
-            predTime / 1000,
-            syncTime / 1000,
-            sentBytes / 1024,
-            recvBytes / 1024,
-            piece == nullptr ? "~" : piece);
+        int token = (int)context->inference->tokenPipe[0];
+        char *text = context->tokenizer->decode(token);
+        printf("%s", text);
+        reply += text;
         fflush(stdout);
-        predTotalTime += predTime + syncTime;
     }
-
-    NnUint nEvalTokens = nInputTokens - 1;
-    NnUint nPredTokens = pos - nEvalTokens;
-    float evalTotalTimeMs = evalTotalTime / 1000.0;
-    float predTotalTimeMs = predTotalTime / 1000.0;
     printf("\n");
-    printf("Evaluation\n");
-    printf("   nBatches: %d\n", context->args->nBatches);
-    printf("    nTokens: %d\n", nEvalTokens);
-    printf("   tokens/s: %3.2f (%3.2f ms/tok)\n",
-        (nEvalTokens * 1000) / evalTotalTimeMs,
-        evalTotalTimeMs / ((float) nEvalTokens));
-    printf("Prediction\n");
-    printf("    nTokens: %d\n", nPredTokens);
-    printf("   tokens/s: %3.2f (%3.2f ms/tok)\n",
-        (nPredTokens * 1000) / predTotalTimeMs,
-        predTotalTimeMs / ((float) nPredTokens));
-}
+    assistantReplies.push_back(reply);
 
-static NnUint readStdin(const char *guide, char *buffer, NnUint size) {
-    std::fflush(stdin);
-    std::printf("%s", guide);
-    if (std::fgets(buffer, size, stdin) != NULL) {
-        NnUint length = std::strlen(buffer);
-        if (length > 0 && buffer[length - 1] == '\n') {
-            buffer[length - 1] = '\0';
-            length--;
-        }
-        return length;
+    if (context->network != NULL) {
+        NnSize sentBytes, recvBytes;
+        context->network->getStats(&sentBytes, &recvBytes);
+        printf("📈 Network: sent %.2f MB, received %.2f MB\n", sentBytes / (1024.0 * 1024.0), recvBytes / (1024.0 * 1024.0));
     }
-    return 0;
 }
 
-static void chat(AppInferenceContext *context) {
-    const NnUint seqLen = context->header->seqLen;
-    char prompt[2048];
+delete chatTemplate;
+```
 
-    TokenizerChatStops stops(context->tokenizer);
-    ChatTemplateGenerator templateGenerator(context->args->chatTemplateType, context->tokenizer->chatTemplate, stops.stops[0]);
-    EosDetector eosDetector(stops.nStops, context->tokenizer->eosTokenIds.data(), stops.stops, stops.maxStopLength, stops.maxStopLength);
-
-    const NnUint sysPromptLength = readStdin("💻 System prompt (optional): ", prompt, sizeof(prompt));
-    std::vector<ChatItem> deltaItems;
-    if (sysPromptLength > 0)
-        deltaItems.push_back(ChatItem{"system", prompt});
-
-    NnUint pos = 0;
-    NnUint userPromptLength;
-    int token;
-    int nInputTokens;
-    do {
-        do {
-            userPromptLength = readStdin("\n👱 User\n> ", prompt, sizeof(prompt));
-        } while (userPromptLength == 0);
-
-        deltaItems.push_back(ChatItem{"user", prompt});
-
-        GeneratedChat inputPrompt = templateGenerator.generate(deltaItems.size(), deltaItems.data(), true);
-        std::unique_ptr<int[]> inputTokensPtr(new int[inputPrompt.length + 2]);
-        int *inputTokens = inputTokensPtr.get();
-
-        bool addBos = pos == 0;
-        context->tokenizer->encode((char*)inputPrompt.content, inputTokens, &nInputTokens, addBos, true);
-
-        NnUint userPromptEndPos = (NnUint)std::min<unsigned int>(seqLen, pos + nInputTokens - 1);
-        for (NnUint i = 0; ;) {
-            int remainingTokens = userPromptEndPos - pos;
-            if (remainingTokens <= 0)
-                break;
-            NnUint batchSize = remainingTokens < context->args->nBatches
-                ? remainingTokens
-                : context->args->nBatches;
-
-            context->inference->setBatchSize(batchSize);
-            context->inference->setPosition(pos);
-            for (NnUint j = 0; j < batchSize; j++)
-                context->inference->setToken(j, inputTokens[i + j]);
-
-            context->inference->forward();
-
-            i += batchSize;
-            pos += batchSize;
-            token = inputTokens[i + 1];
-        }
-
-        context->inference->setBatchSize(1);
-        context->tokenizer->resetDecoder();
-
-        printf("\n🤖 Assistant\n");
-        if (inputPrompt.publicPrompt != nullptr)
-            printf("%s", inputPrompt.publicPrompt);
-
-        while (pos < seqLen) {
-            context->inference->setPosition(pos);
-            context->inference->setToken(0, token);
-            context->inference->forward();
-
-            token = context->sampler->sample(context->inference->logitsPipe);
-
-            char *piece = context->tokenizer->decode(token);
-            EosDetectorType eosType = eosDetector.append(token, piece);
-            if (eosType == NOT_EOS || eosType == EOS) {
-                char *delta = eosDetector.getDelta();
-                if (delta != nullptr) {
-                    printf("%s", delta);
-                    fflush(stdout);
-                }
-                eosDetector.reset();
-            }
-            pos++;
-            if (eosType == EOS) break;
-        }
-
-        deltaItems.clear();
-    } while (pos < seqLen);
-
-    printf("(end of context)\n");
 }
 
-int main(int argc, char **argv) {
-    initQuants();
-    initSockets();
-
-    int returnCode = EXIT_SUCCESS;
-    try {
-        AppCliArgs args = AppCliArgs::parse(argc, argv, true);
-        if (std::strcmp(args.mode, "inference") == 0) {
-            args.benchmark = true;
-            runInferenceApp(&args, &inference);
-        } else if (std::strcmp(args.mode, "chat") == 0)
-            runInferenceApp(&args, &chat);
-        else if (std::strcmp(args.mode, "worker") == 0)
-            runWorkerApp(&args);
-        else
-            throw std::runtime_error("Unsupported mode");
-    } catch (std::exception &e) {
-        printf("🚨 Critical error: %s\n", e.what());
-        returnCode = EXIT_FAILURE;
-    }
-
-    cleanupSockets();
-    return returnCode;
-}
+int main(int argc, char\* argv\[\]) { AppCliArgs args = AppCliArgs::parse(argc,
