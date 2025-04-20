@@ -1,235 +1,121 @@
-![Distributed Llama](.github/cover.png)
+Hybrid Distributed Llama
+Hybrid Distributed Llama is a high-performance inference engine for large language models (LLMs), designed to run across a hybrid cluster of devices. By distributing the model weights and computation, it enables efficient inference on resource-constrained setups, such as a combination of devices like Mac Mini M1 and Raspberry Pi 5. More devices mean faster inference!
+Features
 
-# Distributed Llama
+Distributed Inference: Split LLM inference across multiple devices to leverage combined computational power.
+Local Model Loading: Models are loaded from local storage using mmap for improved performance and reduced network overhead.
+Dynamic Device Selection: Automatically select devices based on memory capacity using device_manager.py.
+Optimized for ARM: Supports ARM architectures like Mac Mini M1 and Raspberry Pi 5.
+Chat and Inference Modes: Interactive chat mode or batch inference with configurable steps.
+Vulkan Support: Optional GPU acceleration with Vulkan (define DLLAMA_VULKAN during compilation, requires Vulkan SDK and shader compilation).
 
-[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/b4rtaz/distributed-llama/.github%2Fworkflows%2Fmain.yml?style=flat-square)](https://github.com/b4rtaz/distributed-llama/actions) [![License: MIT](https://img.shields.io/github/license/mashape/apistatus.svg?style=flat-square)](/LICENSE) [![Support this project](https://img.shields.io/github/sponsors/b4rtaz?style=flat-square&label=support%20this%20project&color=green)](https://github.com/sponsors/b4rtaz) [![Discord](https://discordapp.com/api/guilds/1245814812353495070/widget.png?style=shield)](https://discord.com/widget?id=1245814812353495070&theme=dark)
+Repository Structure
 
-Connect home devices into a powerful cluster to accelerate LLM inference. More devices mean faster performance, leveraging tensor parallelism and high-speed synchronization over Ethernet.
+src/: Core C++ source files (app.cpp, dllama.cpp, nn-network.cpp, etc.).
+device_manager.py: Python script for dynamic device selection based on memory capacity.
+launch.py: Script to download models, configure devices, and launch Hybrid Distributed Llama.
+device-check.cpp: Utility to check device memory capacity.
+Makefile: Build configuration for compiling the project.
+models/: Directory where model and tokenizer files are stored (created by launch.py).
 
-Supports Linux, macOS, and Windows. Optimized for ARM and x86_64 AVX2 CPUs.
+Installation
+Prerequisites
+Mac Mini M1
 
-**News**
-- 23 Mar 2025 - [🌋 Experimental Vulkan support](https://github.com/b4rtaz/distributed-llama/releases/tag/v0.13.0)
-- 12 Feb 2025 - 🚧 Merged the [fundamental codebase refactor](https://github.com/b4rtaz/distributed-llama/releases/tag/v0.12.0)
-- 9 Jan 2025 - [🍎 Llama 3.3 70B on 4 x Mac Mini M4 Pro 24GB RAM](https://github.com/b4rtaz/distributed-llama/discussions/147)
-- 28 Jul 2024 - [🌳 How to Run Llama 3.1 405B on Home Devices? Build AI Cluster!](https://medium.com/@b4rtaz/how-to-run-llama-3-405b-on-home-devices-build-ai-cluster-ad0d5ad3473b)
+OS: macOS (e.g., Ventura or later)
+Tools:
+Xcode Command Line Tools: xcode-select --install
+Homebrew: /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+Python 3: brew install python3
+CMake: brew install cmake
+GCC: brew install gcc
 
 
-### 🔥 Setup Root Node by Single Command
+Python Packages: pip3 install psutil
+Optional (Vulkan): Install Vulkan SDK if using DLLAMA_VULKAN.
 
-Python 3 and C++ compiler required. The command will download the model and the tokenizer.
+Raspberry Pi 5
 
-| Model                             | Size     | Command                                              |
-| --------------------------------- | -------- | ---------------------------------------------------- |
-| Llama 3.1 8B Instruct Q40         | 6.32 GB  | `python launch.py llama3_1_8b_instruct_q40`          |
-| Llama 3.1 405B Instruct Q40.      | 238 GB   | `python launch.py llama3_1_405b_instruct_q40`.       |
-| Llama 3.2 1B Instruct Q40         | 1.7 GB   | `python launch.py llama3_2_1b_instruct_q40`          |
-| Llama 3.2 3B Instruct Q40         | 3.4 GB   | `python launch.py llama3_2_3b_instruct_q40`          |
-| Llama 3.3 70B Instruct Q40        | 40 GB    | `python launch.py llama3_3_70b_instruct_q40`         |
-| DeepSeek R1 Distill Llama 8B Q40  | 6.32 GB  | `python launch.py deepseek_r1_distill_llama_8b_q40`  |
+OS: Raspberry Pi OS (64-bit, Bookworm)
+Tools:
+Update: sudo apt update && sudo apt upgrade
+Build Tools: sudo apt install build-essential cmake python3 python3-pip
 
-### 🛠️ Convert Model Manually
 
-Supported architectures: Llama.
+Python Packages: pip3 install psutil
+Optional (Vulkan): Install Vulkan libraries (libvulkan-dev) and glslc if using DLLAMA_VULKAN.
 
-* [How to Convert Llama 3.1](./docs/LLAMA.md)
-* [How to Convert Hugging Face Model](./docs/HUGGINGFACE.md)
+Build Instructions
 
-### 🚧 Known Limitations
+Clone the Repository:
+git clone https://github.com/b4rtaz/hybrid-distributed-llama.git
+cd hybrid-distributed-llama
 
-* You can run Distributed Llama only on 1, 2, 4... 2^n nodes.
-* The maximum number of nodes is equal to the number of KV heads in the model [#70](https://github.com/b4rtaz/distributed-llama/issues/70).
-* Only the following quantizations are supported [#183](https://github.com/b4rtaz/distributed-llama/issues/183):
-  * `q40` model with `q80` `buffer-float-type`
-  * `f32` model with `f32` `buffer-float-type`
 
-### 👷 Architecture
+Build the Project:
 
-The project is split up into two parts:
-* **Root node** - it's responsible for loading the model and weights and forward them to workers. Also, it synchronizes the state of the neural network. The root node is also a worker, it processes own slice of the neural network.
-* **Worker node** - it processes own slice of the neural network. It doesn't require any configuration related to the model.
+Default build:
+make
 
-You always need the root node and you can add 2^n - 1 worker nodes to speed up the inference. The RAM usage of the neural network is split up across all nodes. The root node requires a bit more RAM than worker nodes.
 
-### 🎹 Commands
+With Vulkan support:
+make DLLAMA_VULKAN=1
 
-* `dllama inference` - run the inference with a simple benchmark,
-* `dllama chat` - run the CLI chat,
-* `dllama worker` - run the worker node,
-* `dllama-api` - run the API server.
 
-<details>
+With debug mode:
+make DEBUG=1
 
-<summary>🎹 Supported Arguments</summary>
 
-<br />Inference, Chat, API
+On Mac Mini M1, if you encounter issues, update the Makefile to use g++-12:
+CXX = g++-12
 
-| Argument                     | Description                                                      | Example                                |
-| ---------------------------- | ---------------------------------------------------------------- | -------------------------------------- |
-| `--model <path>`             | Path to model.                                                   | `dllama_model_meta-llama-3-8b_q40.m`   |
-| `--tokenizer <path>`         | Tokenizer to model.                                              | `dllama_tokenizer_llama3.t`            |
-| `--buffer-float-type <type>` | Float precision of synchronization.                              | `q80`                                  |
-| `--workers <workers>`        | Addresses of workers (ip:port), separated by space.              | `10.0.0.1:9999 10.0.0.2:9999`          |
-| `--max-seq-len <n>`          | The maximum sequence length, it helps to reduce the RAM usage.   | `4096`                                 |
 
-Inference, Chat, Worker, API
+On Raspberry Pi 5, if C++17 features fail, install g++-10:
+sudo apt install g++-10
 
-| Argument                     | Description                                                           | Example                             |
-| ---------------------------- | --------------------------------------------------------------------- | ----------------------------------- |
-| `--nthreads <n>`             | Amount of threads. Don't set a higher value than number of CPU cores. | `4`                                 |
+Update Makefile:
+CXX = g++-10
 
-Worker, API
 
-| Argument                     | Description                       | Example           |
-| ---------------------------- | --------------------------------- | ----------------- |
-| `--port <port>`              | Binding port.                     | `9999`            |
 
-Inference
 
-| Argument                     | Description                    | Example            |
-| ---------------------------- | ------------------------------ | ------------------ |
-| `--prompt <prompt>`          | Initial prompt.                | `"Hello World"`    |
-| `--steps <steps>`            | Number of tokens to generate.  | `256`              |
+Verify Device Capacity:
+./device-check
 
-</details>
+This outputs the available memory (e.g., Total memory: 16384 MB on a 16 GB Mac Mini M1).
 
-## 📊 Measurements
 
-Please check the [discussions](https://github.com/b4rtaz/distributed-llama/discussions) section, where many measurements were published on different configurations.
+Usage
+Single Device
+To run Hybrid Distributed Llama on a single device (e.g., Mac Mini M1):
+python3 launch.py llama3_1_8b_instruct_q40 --run
 
-## 🚀 Setup
+This downloads the Llama 3.1 8B model (4.5 GB) to models/llama3_1_8b_instruct_q40/ and starts the chat mode.
+For a smaller model on Raspberry Pi 5 (e.g., 8 GB RAM):
+python3 launch.py llama3_2_1b_instruct_q40 --run
 
-Select and expand one of the sections below:
+Multi-Device Setup
+To run across multiple devices (e.g., Mac Mini M1 as root, Raspberry Pi 5 as worker):
 
-<details>
+Ensure all devices have the repository and model files in the same path.
+scp -r models/llama3_1_8b_instruct_q40 pi@192.168.0.2:/path/to/hybrid-distributed-llama/models/
 
-<summary>💻 MacOS, Linux, or Windows</summary>
 
-<br />You need x86_64 AVX2 CPUs or ARM CPUs. Different devices may have different CPUs.
+Run on the root node (Mac Mini):
+python3 launch.py llama3_1_8b_instruct_q40 --devices macmini,192.168.0.1,9999 pi5,192.168.0.2,9999 --run
 
-#### MacOS or Linux
 
-The below instructions are for Debian-based distributions but you can easily adapt them to your distribution, macOS.
 
-1. Install Git and GCC:
-```sh
-sudo apt install git build-essential
-```
-2. Clone this repository and compile Distributed Llama on all computers:
-```sh
-git clone https://github.com/b4rtaz/distributed-llama.git
-cd distributed-llama
-make dllama
-make dllama-api
-```
+Available Models
 
-Continue to point 3.
+llama3_1_8b_instruct_q40 (4.5 GB)
+llama3_1_405b_instruct_q40 (225 GB, requires multiple devices)
+llama3_2_1b_instruct_q40 (1.2 GB)
+llama3_2_3b_instruct_q40 (2 GB)
+llama3_3_70b_instruct_q40 (35 GB)
+deepseek_r1_distill_llama_8b_q40 (4.5 GB)
 
-#### Windows
-
-1. Install Git and Mingw (via [Chocolatey](https://chocolatey.org/install)):
-```powershell
-choco install mingw
-```
-2. Clone this repository and compile Distributed Llama on all computers:
-```sh
-git clone https://github.com/b4rtaz/distributed-llama.git
-cd distributed-llama
-make dllama
-make dllama-api
-```
-
-Continue to point 3.
-
-#### Run Cluster
-
-3. Transfer weights and the tokenizer file to the root computer.
-4. Run worker nodes on worker computers:
-```sh
-./dllama worker --port 9999 --nthreads 4
-```
-5. Run root node on the root computer:
-```sh
-./dllama inference --model dllama_model_meta-llama-3-8b_q40.m --tokenizer dllama_tokenizer_llama3.t --buffer-float-type q80 --prompt "Hello world" --steps 16 --nthreads 4 --workers 192.168.0.1:9999
-```
-
-To add more worker nodes, just add more addresses to the `--workers` argument.
-
-```
-./dllama inference ... --workers 192.168.0.1:9999 192.168.0.2:9999 192.168.0.3:9999
-```
-
-</details>
-
-<details>
-
-<summary>📟 Raspberry Pi</summary>
-
-<br />
-
-1. Install `Raspberry Pi OS Lite (64 bit)` on your Raspberry Pi devices. This OS doesn't have desktop environment.
-2. Connect all devices to your switch or router.
-3. Connect to all devices via SSH.
-```
-ssh user@raspberrypi1.local
-ssh user@raspberrypi2.local
-```
-4. Install Git:
-```sh
-sudo apt install git
-```
-5. Clone this repository and compile Distributed Llama on all devices:
-```sh
-git clone https://github.com/b4rtaz/distributed-llama.git
-cd distributed-llama
-make dllama
-make dllama-api
-```
-6. Transfer weights and the tokenizer file to the root device.
-7. Optional: assign static IP addresses.
-```sh
-sudo ip addr add 10.0.0.1/24 dev eth0 # 1th device
-sudo ip addr add 10.0.0.2/24 dev eth0 # 2th device
-```
-8. Run worker nodes on worker devices:
-```sh
-sudo nice -n -20 ./dllama worker --port 9999 --nthreads 4
-```
-9. Run root node on the root device:
-```sh
-sudo nice -n -20 ./dllama inference --model dllama_model_meta-llama-3-8b_q40.m --tokenizer dllama_tokenizer_llama3.t --buffer-float-type q80 --prompt "Hello world" --steps 16 --nthreads 4 --workers 10.0.0.2:9999
-```
-
-To add more worker nodes, just add more addresses to the `--workers` argument.
-
-```
-./dllama inference ... --workers 10.0.0.2:9999 10.0.0.3:9999 10.0.0.4:9999
-```
-
-</details>
-
-## ✋ Contribution
-
-Feel free to contribute to this project. For small changes, simply create a new merge request. For larger changes, please create an issue to discuss your plans. Please follow these guidelines when contributing:
-
-* Make only minimal changes and avoid modifying files that are not necessary.
-* Ensure the code is compatible across all supported systems and CPUs.
-* This repository is maintained in English.
-
-## 💡 License
-
-This project is released under the MIT license.
-
-## 📖 Citation
-
-```
-@misc{dllama,
-  author = {Bartłomiej Tadych},
-  title = {Distributed Llama},
-  year = {2024},
-  publisher = {GitHub},
-  journal = {GitHub repository},
-  howpublished = {\url{https://github.com/b4rtaz/distributed-llama}},
-  commit = {7eb77ca93ec0d502e28d36b6fb20039b449cbea4}
-}
-```
+Contributing
+Contributions are welcome! Please open an issue or submit a pull request on GitHub.
+License
+Hybrid Distributed Llama is licensed under the MIT License. See LICENSE for details.
