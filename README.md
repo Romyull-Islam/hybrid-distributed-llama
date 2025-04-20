@@ -50,7 +50,7 @@ Hybrid Distributed Llama is a high-performance inference engine for large langua
 1. **Clone the Repository**:
 
    ```bash
-   git clone https://github.com/b4rtaz/hybrid-distributed-llama.git
+   git clone https://github.com/Romyull-Islam/hybrid-distributed-llama.git
    cd hybrid-distributed-llama
    ```
 
