@@ -92,4 +92,9 @@ LlmNet buildLlmNet(LlmHeader *h, NnUint nNodes, NnUint nBatches);
 void releaseLlmNet(LlmNet *net);
 void loadLlmNetWeight(const char* path, LlmNet *net, NnRootWeightLoader *loader);
 
+// Added declarations for memory-based loading
+LlmHeader loadLlmHeaderFromMemory(void* data, int maxSeqLen, int syncType);
+void loadLlmNetWeightFromMemory(void* data, void* net, void* weightLoader);
+void loadLlmNetWeightFromMemory(void* data, void* header, void* nodeConfig, void* weightReader);
+
 #endif

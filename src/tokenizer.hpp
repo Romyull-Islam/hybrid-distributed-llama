@@ -43,7 +43,6 @@ private:
     char *strBuffer;
     size_t strBufferPos;
 
-
 public:
     std::vector<int> eosTokenIds;
     unsigned int vocabSize;
@@ -52,6 +51,7 @@ public:
     char *chatTemplate;
 
     Tokenizer(const char *tokenizer_path);
+    Tokenizer(void* tokenizerData); // Added constructor for void*
     ~Tokenizer();
     int findSpecialTokenStartWith(char *piece);
     int findRegularToken(char *piece);
