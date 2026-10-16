@@ -17,3 +17,5 @@ server
 /dllama-*
 *.exe
 *.spv
+# macOS
+.DS_Store
