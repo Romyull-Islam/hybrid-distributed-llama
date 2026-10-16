@@ -1,15 +1,31 @@
 # Hybrid Distributed Llama
 
-Hybrid Distributed Llama is a high-performance inference engine for large language models (LLMs), designed to run across a hybrid cluster of devices. By distributing the model weights and computation, it enables efficient inference on resource-constrained setups, such as a combination of devices like Mac Mini M1 and Raspberry Pi 5. More devices mean faster inference!
+> Built on [distributed-llama](https://github.com/b4rtaz/distributed-llama) by Bartłomiej Tadych (MIT). This repository adds memory-aware device selection, local `mmap`-based model loading on each node, and a small memory-check utility, aimed at running LLM inference across a heterogeneous cluster (for example a Mac Mini M1 together with Raspberry Pi 5 boards).
+
+Hybrid Distributed Llama is an inference engine for large language models (LLMs) that runs across a hybrid cluster of devices. By splitting the model weights and computation across nodes, it targets resource-constrained setups such as a Mac Mini M1 combined with Raspberry Pi 5 boards.
+
+## What this repository changes
+
+Compared with the upstream base (commit `56b96ad`, "feat: optional network turbo"):
+
+- **`device_manager.py`** (new): estimates per-node memory with `psutil` (currently the local machine's available memory is used for every listed device), picks the smallest power-of-two number of nodes whose memory fits the model size plus 20% overhead, and builds the `--workers` argument for `dllama`.
+- **`device-check.cpp`** (new): prints the node's free memory in MB (uses `sysinfo` on Linux and `GlobalMemoryStatusEx` on Windows). Built by `make`.
+- **`launch.py`**: each model entry carries an approximate size; new `--devices hostname,ip,port ...` option; files are downloaded only when missing; worker addresses are appended to the generated `dllama` command.
+- **`src/app.cpp`, `src/llm.cpp`, `src/llm.hpp`**: the model header, weights and tokenizer are read from a local `mmap`-ed file (`loadLlmHeaderFromMemory`, `loadLlmNetWeightFromMemory`, `Tokenizer(void*)`).
+- **`src/nn/nn-network.cpp`**: the root node no longer streams weight slices to workers over the network; each node is expected to load its own weights locally.
+- **`src/dllama.cpp`, `src/app.hpp`, `src/tokenizer.cpp`**: reworked inference/chat loop and tokenizer to match the memory-based loading.
+- **`Makefile`**: rewritten (C++17, `build/` directory, `device-check` target).
+
+**Status:** research prototype, work in progress. In the current code the worker-side loader (`NnWorkerWeightReader::read()`) is a placeholder and `dllama`'s `main` runs only the `inference`/`chat` modes, so the multi-device path is not complete yet.
 
 ## Features
 
-- **Distributed Inference**: Split LLM inference across multiple devices to leverage combined computational power.
-- **Local Model Loading**: Models are loaded from local storage using `mmap` for improved performance and reduced network overhead.
+- **Distributed Inference** (from upstream): Split LLM inference across multiple devices to combine their memory and compute.
+- **Local Model Loading**: Each node loads the model from its own local storage using `mmap` instead of receiving weights from the root node over the network.
 - **Dynamic Device Selection**: Automatically select devices based on memory capacity using `device_manager.py`.
-- **Optimized for ARM**: Supports ARM architectures like Mac Mini M1 and Raspberry Pi 5.
+- **ARM targets**: Intended for ARM devices such as Mac Mini M1 and Raspberry Pi 5.
 - **Chat and Inference Modes**: Interactive chat mode or batch inference with configurable steps.
-- **Vulkan Support**: Optional GPU acceleration with Vulkan (define `DLLAMA_VULKAN` during compilation, requires Vulkan SDK and shader compilation).
+- **Vulkan Support** (from upstream): Optional GPU acceleration with Vulkan (define `DLLAMA_VULKAN` during compilation, requires Vulkan SDK and shader compilation).
 
 ## Repository Structure
 
@@ -94,7 +110,7 @@ Hybrid Distributed Llama is a high-performance inference engine for large langua
    ./device-check
    ```
 
-   This outputs the available memory (e.g., `Total memory: 16384 MB` on a 16 GB Mac Mini M1).
+   This prints the free memory of the device in MB. Note that `device-check.cpp` uses `sysinfo`, which is Linux-only (Windows is also handled); it does not build on macOS as-is.
 
 ## Usage
 
@@ -144,4 +160,4 @@ Contributions are welcome! Please open an issue or submit a pull request on GitH
 
 ## License
 
-Hybrid Distributed Llama is licensed under the MIT License. See `LICENSE` for details.
+MIT License, inherited from upstream distributed-llama (© Bartłomiej Tadych). See `LICENSE` for details.
